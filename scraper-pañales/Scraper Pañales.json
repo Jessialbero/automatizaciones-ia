@@ -1,0 +1,490 @@
+{
+  "name": "Scraper Pañales",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "1y3UzwD6P2l8rVOc",
+          "mode": "list",
+          "cachedResultName": "monitor_precios",
+          "cachedResultUrl": "/projects/M4CgW57hC8kQKS2z/datatables/1y3UzwD6P2l8rVOc"
+        },
+        "returnAll": true
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -576,
+        -32
+      ],
+      "id": "78cdeb4f-612f-4736-9678-98a397eba781",
+      "name": "Leer productos"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1,
+                5
+              ],
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -784,
+        -32
+      ],
+      "id": "33d734ec-d216-4ff6-bee9-487eba849964",
+      "name": "09 am"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/150.0.0.0 Safari/537.36"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "es-AR,es;q=0.9"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 2000
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text",
+              "outputPropertyName": "html"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -368,
+        -32
+      ],
+      "id": "938a9c77-ef10-4dbf-9da8-eca197b8daac",
+      "name": "Obtener HTML"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Recupera los datos originales de la fila de la tabla.\n// El nodo anterior debe llamarse exactamente \"Leer productos\".\nconst producto = $('Leer productos').item.json;\n\nconst nombreProducto =\n  producto[\"nombre_Producto\"] ??\n  producto.nombre ??\n  \"Producto sin nombre\";\n\nconst sitioDescuento =\n  producto[\"sitio\"] ??\n  \"Sitio no informado\";\n\nconst statusCode = Number($json.statusCode ?? 200);\n\n// Dependiendo de la configuración del HTTP Request,\n// el HTML puede encontrarse en html, body o data.\nconst html = String(\n  $json.html ??\n  $json.body ??\n  $json.data ??\n  ''\n);\n\n/**\n * Convierte diferentes formatos de precios en un número.\n *\n * Ejemplos:\n * \"$ 25.999,90\" → 25999.90\n * \"25999.90\" → 25999.90\n * \"25999\" → 25999\n */\nfunction normalizarPrecio(valor) {\n  if (typeof valor === 'number') {\n    return valor;\n  }\n\n  if (valor === null || valor === undefined) {\n    return NaN;\n  }\n\n  let texto = String(valor)\n    .trim()\n    .replace(/[^\\d,.-]/g, '');\n\n  if (!texto) {\n    return NaN;\n  }\n\n  const ultimaComa = texto.lastIndexOf(',');\n  const ultimoPunto = texto.lastIndexOf('.');\n\n  // Ejemplo argentino: 25.999,90\n  if (ultimaComa > -1 && ultimoPunto > -1) {\n    if (ultimaComa > ultimoPunto) {\n      texto = texto\n        .replace(/\\./g, '')\n        .replace(',', '.');\n    } else {\n      // Ejemplo internacional: 25,999.90\n      texto = texto.replace(/,/g, '');\n    }\n  } else if (ultimaComa > -1) {\n    const decimales = texto.length - ultimaComa - 1;\n\n    if (decimales === 2) {\n      texto = texto.replace(',', '.');\n    } else {\n      texto = texto.replace(/,/g, '');\n    }\n  } else if (ultimoPunto > -1) {\n    const partes = texto.split('.');\n\n    // Ejemplo: 25.999\n    if (\n      partes.length > 2 ||\n      (partes.length === 2 && partes[1].length === 3)\n    ) {\n      texto = partes.join('');\n    }\n  }\n\n  return Number(texto);\n}\n\n/**\n * Busca recursivamente un objeto Schema.org de tipo Product.\n */\nfunction encontrarProducto(valor) {\n  if (!valor || typeof valor !== 'object') {\n    return null;\n  }\n\n  const tipo = valor['@type'];\n  const tipos = Array.isArray(tipo) ? tipo : [tipo];\n\n  const esProducto = tipos.some((item) =>\n    String(item || '').toLowerCase().endsWith('product')\n  );\n\n  if (esProducto) {\n    return valor;\n  }\n\n  for (const hijo of Object.values(valor)) {\n    const encontrado = encontrarProducto(hijo);\n\n    if (encontrado) {\n      return encontrado;\n    }\n  }\n\n  return null;\n}\n\n/**\n * Selecciona una oferta que tenga un precio.\n */\nfunction encontrarOferta(ofertas) {\n  if (!ofertas) {\n    return null;\n  }\n\n  const lista = Array.isArray(ofertas) ? ofertas : [ofertas];\n\n  return (\n    lista.find((oferta) =>\n      oferta &&\n      (\n        oferta.price !== undefined ||\n        oferta.lowPrice !== undefined ||\n        oferta.priceSpecification\n      )\n    ) ||\n    lista[0] ||\n    null\n  );\n}\n\nlet precioSinProcesar = null;\nlet moneda = 'ARS';\nlet nombreDetectado = producto.nombre || '';\n\nif (statusCode < 400 && html) {\n  // Busca bloques JSON-LD dentro de la página.\n  const bloques = [\n    ...html.matchAll(\n      /<script\\b[^>]*type=[\"']application\\/ld\\+json[\"'][^>]*>([\\s\\S]*?)<\\/script>/gi\n    ),\n  ];\n\n  for (const bloque of bloques) {\n    let contenido = bloque[1].trim();\n\n    contenido = contenido\n      .replace(/^<!--/, '')\n      .replace(/-->$/, '')\n      .trim();\n\n    try {\n      const jsonLd = JSON.parse(contenido);\n      const datosProducto = encontrarProducto(jsonLd);\n\n      if (!datosProducto) {\n        continue;\n      }\n\n      const oferta = encontrarOferta(datosProducto.offers);\n\n      const especificacionPrecio = Array.isArray(\n        oferta?.priceSpecification\n      )\n        ? oferta.priceSpecification[0]\n        : oferta?.priceSpecification;\n\n      precioSinProcesar =\n        oferta?.price ??\n        oferta?.lowPrice ??\n        especificacionPrecio?.price ??\n        null;\n\n      moneda =\n        oferta?.priceCurrency ??\n        especificacionPrecio?.priceCurrency ??\n        moneda;\n\n      nombreDetectado =\n        producto.nombre ||\n        datosProducto.name ||\n        nombreDetectado;\n\n      if (precioSinProcesar !== null) {\n        break;\n      }\n    } catch (error) {\n      // Algunos bloques JSON-LD no son válidos.\n      // Continuamos buscando en los demás.\n    }\n  }\n}\n\n// Segunda opción: buscar etiquetas meta con el precio.\nif (precioSinProcesar === null && statusCode < 400) {\n  const patronesMeta = [\n    /<meta[^>]+(?:property|itemprop)=[\"'](?:product:price:amount|price)[\"'][^>]+content=[\"']([^\"']+)[\"']/i,\n    /<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+(?:property|itemprop)=[\"'](?:product:price:amount|price)[\"']/i,\n  ];\n\n  for (const patron of patronesMeta) {\n    const coincidencia = html.match(patron);\n\n    if (coincidencia?.[1]) {\n      precioSinProcesar = coincidencia[1];\n      break;\n    }\n  }\n}\n\nconst precioActual = normalizarPrecio(precioSinProcesar);\n\nconst precioEncontrado =\n  Number.isFinite(precioActual) &&\n  precioActual > 0;\n\nconst precioAnteriorVacio =\n  producto.ultimo_precio === null ||\n  producto.ultimo_precio === undefined ||\n  producto.ultimo_precio === '';\n\nconst precioAnterior = precioAnteriorVacio\n  ? null\n  : Number(producto.ultimo_precio);\n\nconst bajo =\n  precioEncontrado &&\n  Number.isFinite(precioAnterior) &&\n  precioAnterior > 0 &&\n  precioActual < precioAnterior;\n\nconst diferencia = bajo\n  ? Number((precioAnterior - precioActual).toFixed(2))\n  : 0;\n\nconst porcentajeBaja = bajo\n  ? Number(\n      (\n        ((precioAnterior - precioActual) / precioAnterior) *\n        100\n      ).toFixed(2)\n    )\n  : 0;\n\nlet mensajeError = '';\n\nif (statusCode >= 400) {\n  mensajeError = `La página respondió con HTTP ${statusCode}`;\n} else if (!precioEncontrado) {\n  mensajeError =\n    'No se encontró un precio en el HTML de esta página';\n}\n\nreturn {\n  json: {\n    ...producto,\n    nombre_Producto: nombreProducto,\n    sitio: sitioDescuento,\n    precio_anterior: precioAnterior,\n    precio_actual: precioEncontrado ? precioActual : null,\n    moneda,\n    bajo,\n    diferencia,\n    porcentaje_baja: porcentajeBaja,\n    precio_encontrado: precioEncontrado,\n    ultima_revision: new Date().toISOString(),\n    ultimo_error: mensajeError,\n  },\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        -32
+      ],
+      "id": "e400015d-4a2c-4521-b434-3a964b91e857",
+      "name": "Extraer precio"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "ee8519d3-f4b3-442f-959d-f579dcac7fea",
+              "leftValue": "={{ $json.precio_encontrado }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        48,
+        -32
+      ],
+      "id": "55f6d625-3dc8-4173-b7ec-fc174adc71e5",
+      "name": "¿Se encontró el precio?"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "value": "1y3UzwD6P2l8rVOc",
+          "mode": "list",
+          "cachedResultName": "monitor_precios",
+          "cachedResultUrl": "/projects/M4CgW57hC8kQKS2z/datatables/1y3UzwD6P2l8rVOc"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "url",
+              "keyValue": "={{ $json.url }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ultimo_precio": "={{ $json.precio_actual }}",
+            "ultima_revision": "={{ $json.ultima_revision }}",
+            "ultima_error": "={{ $json.ultima_error }}",
+            "sitio": "={{ $json.sitio }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "sitio",
+              "displayName": "sitio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "url",
+              "displayName": "url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "ultimo_precio",
+              "displayName": "ultimo_precio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "ultima_revision",
+              "displayName": "ultima_revision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "ultima_error",
+              "displayName": "ultima_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        256,
+        -128
+      ],
+      "id": "59e515ea-a59e-4a29-8c8d-e4dd872eb11b",
+      "name": "Update row(s)"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "3a0411fd-b452-4222-b80a-7b3911bd2ab6",
+              "leftValue": "={{ $json.bajo }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        304,
+        16
+      ],
+      "id": "d07413f8-ffa0-4930-8a1c-276e0c709dba",
+      "name": "¿Bajó de precio?"
+    },
+    {
+      "parameters": {
+        "sendTo": "jessialbero@gmail.com",
+        "subject": "=🔥Bajó el precio en {{ $json.sitio }}",
+        "message": "=<!DOCTYPE html> <html lang=\"es\"> <head>   <meta charset=\"UTF-8\">   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">   <title>Alerta de precio</title> </head>  <body style=\"margin:0; padding:0; background-color:#f4f6f8; font-family:Arial, Helvetica, sans-serif;\">    <table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\"          style=\"background-color:#f4f6f8; padding:30px 12px;\">     <tr>       <td align=\"center\">          <table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\"                style=\"max-width:620px; background-color:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,0.08);\">            <!-- Encabezado -->           <tr>             <td align=\"center\"                 style=\"background-color:#16a34a; padding:32px 24px; color:#ffffff;\">                <div style=\"font-size:42px; line-height:1; margin-bottom:12px;\">                 🔥               </div>                <h1 style=\"margin:0; font-size:27px; line-height:1.3;\">                 ¡Bajó de precio!               </h1>                <p style=\"margin:10px 0 0; font-size:16px; line-height:1.5; opacity:0.95;\">                 Encontramos una nueva oportunidad de ahorro.               </p>              </td>           </tr>            <!-- Mensaje y sitio -->           <tr>             <td style=\"padding:32px 30px 18px;\">                <h2 style=\"margin:0 0 22px; color:#111827; font-size:23px; line-height:1.4;\">                 ¡Los pañales bajaron de precio!               </h2>                <table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\"                      style=\"background-color:#eff6ff; border:1px solid #bfdbfe; border-radius:12px;\">                 <tr>                   <td style=\"padding:16px 18px;\">                     <p style=\"margin:0 0 5px; color:#1e40af; font-size:13px; font-weight:bold; text-transform:uppercase;\">                       Sitio con descuento                     </p>                      <p style=\"margin:0; color:#1d4ed8; font-size:20px; font-weight:bold;\">                       🛒 {{ $json.sitio }}                     </p>                   </td>                 </tr>               </table>              </td>           </tr>            <!-- Precios -->           <tr>             <td style=\"padding:10px 30px;\">                <table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\">                 <tr>                    <!-- Precio anterior -->                   <td width=\"48%\" valign=\"top\"                       style=\"background-color:#f9fafb; border:1px solid #e5e7eb; border-radius:12px; padding:18px;\">                      <p style=\"margin:0 0 8px; color:#6b7280; font-size:13px;\">                       Precio anterior                     </p>                      <p style=\"margin:0; color:#6b7280; font-size:22px; font-weight:bold; text-decoration:line-through;\">                       {{                         new Intl.NumberFormat(                           'es-AR',                           {                             style: 'currency',                             currency: $json.moneda || 'ARS',                             maximumFractionDigits: 2                           }                         ).format(Number($json.precio_anterior))                       }}                     </p>                    </td>                    <td width=\"4%\" style=\"font-size:1px;\">&nbsp;</td>                    <!-- Precio actual -->                   <td width=\"48%\" valign=\"top\"                       style=\"background-color:#ecfdf5; border:1px solid #86efac; border-radius:12px; padding:18px;\">                      <p style=\"margin:0 0 8px; color:#15803d; font-size:13px; font-weight:bold;\">                       Precio con descuento                     </p>                      <p style=\"margin:0; color:#15803d; font-size:25px; font-weight:bold;\">                       {{                         new Intl.NumberFormat(                           'es-AR',                           {                             style: 'currency',                             currency: $json.moneda || 'ARS',                             maximumFractionDigits: 2                           }                         ).format(Number($json.precio_actual))                       }}                     </p>                    </td>                  </tr>               </table>              </td>           </tr>            <!-- Ahorro -->           <tr>             <td style=\"padding:18px 30px;\">                <table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\"                      style=\"background-color:#fffbeb; border:1px solid #fde68a; border-radius:12px;\">                 <tr>                    <td style=\"padding:18px;\">                     <p style=\"margin:0 0 5px; color:#92400e; font-size:14px;\">                       💰 Ahorrás                     </p>                      <p style=\"margin:0; color:#92400e; font-size:23px; font-weight:bold;\">                       {{                         new Intl.NumberFormat(                           'es-AR',                           {                             style: 'currency',                             currency: $json.moneda || 'ARS',                             maximumFractionDigits: 2                           }                         ).format(Number($json.diferencia))                       }}                     </p>                   </td>                    <td align=\"right\" style=\"padding:18px;\">                     <span style=\"display:inline-block; background-color:#f59e0b; color:#ffffff; font-size:17px; font-weight:bold; padding:9px 14px; border-radius:999px;\">                       ↓ {{ $json.porcentaje_baja }}%                     </span>                   </td>                  </tr>               </table>              </td>           </tr>            <!-- Botón -->           <tr>             <td align=\"center\" style=\"padding:14px 30px 28px;\">                <a href=\"{{ $json.url }}\"                  target=\"_blank\"                  style=\"display:inline-block; background-color:#2563eb; color:#ffffff; text-decoration:none; font-size:16px; font-weight:bold; padding:15px 28px; border-radius:10px;\">                 Ver oferta en {{ $json.sitio }}               </a>                <p style=\"margin:16px 0 0; color:#9ca3af; font-size:12px; line-height:1.5;\">                 También puedes copiar este enlace:                 <br>                  <a href=\"{{ $json.url }}\"                    style=\"color:#2563eb; word-break:break-all;\">                   {{ $json.url }}                 </a>               </p>              </td>           </tr>            <!-- Pie -->           <tr>             <td style=\"background-color:#f9fafb; border-top:1px solid #e5e7eb; padding:20px 30px; text-align:center;\">                <p style=\"margin:0; color:#6b7280; font-size:12px; line-height:1.5;\">                 Precio revisado el                 {{                   new Date($json.ultima_revision).toLocaleString(                     'es-AR',                     {                       timeZone: 'America/Argentina/Buenos_Aires'                     }                   )                 }}               </p>                <p style=\"margin:7px 0 0; color:#9ca3af; font-size:11px;\">                 Alerta automática generada por tu monitor de precios en n8n.               </p>              </td>           </tr>          </table>        </td>     </tr>   </table>  </body> </html> ",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        512,
+        -80
+      ],
+      "id": "9bff2692-0ab8-4378-ad11-213a91df5fd9",
+      "name": "Enviar alerta Gmail",
+      "webhookId": "1041a363-1ea0-4211-8afe-de5b18cd4e81",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "C7qSjIEvwGh0TrWw",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "value": "1y3UzwD6P2l8rVOc",
+          "mode": "list",
+          "cachedResultName": "monitor_precios",
+          "cachedResultUrl": "/projects/M4CgW57hC8kQKS2z/datatables/1y3UzwD6P2l8rVOc"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "keyValue": "={{ $json.id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ultima_revision": "={{ $now.toISO() }}",
+            "ultima_error": "={{ $json.ultima_error || 'No se pudo encontrar el precio del producto' }}",
+            "sitio": "={{ $json.sitio }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "sitio",
+              "displayName": "sitio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "nombre_Producto",
+              "displayName": "nombre_Producto",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "url",
+              "displayName": "url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "ultimo_precio",
+              "displayName": "ultimo_precio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": true
+            },
+            {
+              "id": "ultima_revision",
+              "displayName": "ultima_revision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "ultima_error",
+              "displayName": "ultima_error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        352,
+        160
+      ],
+      "id": "45d2becc-3553-4ef4-a160-268a4964c272",
+      "name": "Guardar error"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "09 am": {
+      "main": [
+        [
+          {
+            "node": "Leer productos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer productos": {
+      "main": [
+        [
+          {
+            "node": "Obtener HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Obtener HTML": {
+      "main": [
+        [
+          {
+            "node": "Extraer precio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extraer precio": {
+      "main": [
+        [
+          {
+            "node": "¿Se encontró el precio?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Se encontró el precio?": {
+      "main": [
+        [
+          {
+            "node": "¿Bajó de precio?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update row(s)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Guardar error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Bajó de precio?": {
+      "main": [
+        [
+          {
+            "node": "Enviar alerta Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "588b1754-c041-4bdc-9f8d-6887e9a12a2e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "88060866365ede3ecc8432c3272575ba314d3853daaf4118372df7c7a7249d69"
+  },
+  "nodeGroups": [],
+  "id": "gSyHZmdtJ300UMjA",
+  "tags": []
+}
